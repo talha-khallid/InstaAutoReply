@@ -265,17 +265,25 @@ def setup_required(f):
 
 
 # ---------------------------------------------------------------------------
-# Meta Graph API helpers — every network call is wrapped, timed out, retried
+# Meta Graph API helpers — Dual compatible with both Instagram (IG...)
+# and Facebook Page (EAA...) tokens.
 # ---------------------------------------------------------------------------
-def graph_request(method, path, params=None, json_body=None, retries=3, base_timeout=8):
-    """Resilient wrapper around requests.* for the Graph API.
+def get_base_url(token):
+    """Routes to graph.instagram.com for IG tokens, graph.facebook.com for Page tokens."""
+    if token and token.strip().startswith("IG"):
+        return f"https://graph.instagram.com/{GRAPH_API_VERSION}"
+    return f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
-    Retries transient failures (5xx, 429, connection errors, timeouts) with
-    exponential backoff. Never raises — always returns (data_dict, status_code).
-    status_code == 0 means the request never got a response at all.
-    """
-    url = f"{GRAPH_BASE}/{path.lstrip('/')}"
+
+def graph_request(method, path, params=None, json_body=None, retries=3, base_timeout=8):
+    """Resilient wrapper around requests.* for both IG and FB Graph APIs."""
     params = dict(params or {})
+    token = params.get("access_token") or (
+        json_body.get("access_token") if isinstance(json_body, dict) else ""
+    )
+    base = get_base_url(token)
+    url = f"{base}/{path.lstrip('/')}"
+
     backoff = 1.0
     last_err = "unknown_error"
     last_status = 0
@@ -299,7 +307,7 @@ def graph_request(method, path, params=None, json_body=None, retries=3, base_tim
                 time.sleep(backoff)
                 backoff *= 2
                 continue
-        except Exception as e:  # noqa: BLE001 - absolute last line of defense
+        except Exception as e:
             last_err = str(e)
             break
 
@@ -308,13 +316,44 @@ def graph_request(method, path, params=None, json_body=None, retries=3, base_tim
 
 
 def fetch_instagram_account(access_token):
-    """Resolves the IG Business/Creator account behind a Page token."""
+    """Resolves the IG account whether using an Instagram User token (IG...)
+    or a Facebook Page token (EAA...).
+    """
+    token = (access_token or "").strip()
+    if not token:
+        return None, "Access token is empty"
+
+    # 1. Handle Instagram-native Token (IG... / IGAA...)
+    if token.startswith("IG"):
+        data, status = graph_request(
+            "GET",
+            "me",
+            {
+                "fields": "user_id,username,profile_picture_url,id",
+                "access_token": token,
+            },
+        )
+        if status == 200 and ("id" in data or "user_id" in data):
+            return {
+                "page_id": "",
+                "page_name": "Instagram Account",
+                "page_access_token": token,
+                "ig_user_id": data.get("user_id") or data.get("id"),
+                "ig_username": data.get("username", ""),
+                "ig_profile_pic": data.get("profile_picture_url", ""),
+            }, None
+        msg = data.get("error", {}).get(
+            "message", "Failed to validate Instagram token"
+        )
+        return None, msg
+
+    # 2. Handle Facebook Page Token (EAA...)
     data, status = graph_request(
         "GET",
         "me/accounts",
         {
             "fields": "id,name,access_token,instagram_business_account{id,username,profile_picture_url}",
-            "access_token": access_token,
+            "access_token": token,
         },
     )
     if status != 200 or "error" in data:
@@ -327,7 +366,7 @@ def fetch_instagram_account(access_token):
             return {
                 "page_id": page.get("id"),
                 "page_name": page.get("name"),
-                "page_access_token": page.get("access_token", access_token),
+                "page_access_token": page.get("access_token", token),
                 "ig_user_id": ig.get("id"),
                 "ig_username": ig.get("username", ""),
                 "ig_profile_pic": ig.get("profile_picture_url", ""),
@@ -337,9 +376,10 @@ def fetch_instagram_account(access_token):
 
 
 def fetch_recent_media(ig_user_id, access_token, limit=25):
+    path = "me/media" if access_token.strip().startswith("IG") else f"{ig_user_id}/media"
     data, status = graph_request(
         "GET",
-        f"{ig_user_id}/media",
+        path,
         {
             "fields": "id,caption,media_type,media_url,thumbnail_url,permalink,timestamp",
             "limit": limit,
@@ -352,11 +392,17 @@ def fetch_recent_media(ig_user_id, access_token, limit=25):
 
 
 def check_is_follower(igsid, access_token):
-    """Uses Meta's is_user_follow_business field to detect if the commenter
-    follows the connected business account. Defaults to False (safer, since
-    it just routes to the "please follow" message) on any ambiguity."""
+    """Checks follower status.
+
+    Note: is_user_follow_business is only supported on Page tokens. Defaults to
+    False on IG user tokens so non-follower flow works cleanly.
+    """
+    if access_token.strip().startswith("IG"):
+        return False
     data, status = graph_request(
-        "GET", igsid, {"fields": "is_user_follow_business", "access_token": access_token}
+        "GET",
+        igsid,
+        {"fields": "is_user_follow_business", "access_token": access_token},
     )
     if status == 200 and isinstance(data, dict) and "is_user_follow_business" in data:
         return bool(data["is_user_follow_business"])
@@ -364,13 +410,13 @@ def check_is_follower(igsid, access_token):
 
 
 def send_dm(ig_user_id, recipient_id, message_text, access_token):
+    path = "me/messages" if access_token.strip().startswith("IG") else f"{ig_user_id}/messages"
     body = {
         "recipient": {"id": recipient_id},
         "message": {"text": message_text},
-        "messaging_type": "RESPONSE",
     }
     data, status = graph_request(
-        "POST", f"{ig_user_id}/messages", {"access_token": access_token}, json_body=body
+        "POST", path, {"access_token": access_token}, json_body=body
     )
     if status == 200 and "error" not in data:
         return True, None
@@ -379,7 +425,9 @@ def send_dm(ig_user_id, recipient_id, message_text, access_token):
 
 def post_public_reply(comment_id, text, access_token):
     data, status = graph_request(
-        "POST", f"{comment_id}/replies", {"access_token": access_token, "message": text}
+        "POST",
+        f"{comment_id}/replies",
+        {"access_token": access_token, "message": text},
     )
     if status == 200 and "error" not in data:
         return True, None
