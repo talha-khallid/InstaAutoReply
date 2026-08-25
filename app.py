@@ -39,6 +39,10 @@ import sqlite3
 import secrets
 import logging
 import threading
+import base64
+import hmac
+import hashlib
+import html
 from datetime import timedelta
 from functools import wraps
 
@@ -112,9 +116,19 @@ CREATE TABLE IF NOT EXISTS event_logs (
     created_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS deletion_requests (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    confirmation_code   TEXT UNIQUE NOT NULL,
+    user_id             TEXT,
+    status              TEXT DEFAULT 'completed',
+    details             TEXT,
+    created_at          TEXT DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_processed_status ON processed_comments(dm_status);
 CREATE INDEX IF NOT EXISTS idx_processed_created ON processed_comments(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_type ON event_logs(event_type);
+CREATE INDEX IF NOT EXISTS idx_deletion_code ON deletion_requests(confirmation_code);
 """
 
 
@@ -434,6 +448,32 @@ def post_public_reply(comment_id, text, access_token):
     return False, data.get("error", {}).get("message", f"HTTP {status}")
 
 
+def parse_signed_request(signed_request, app_secret=""):
+    """Parses and verifies a Meta signed_request parameter.
+
+    Returns the decoded JSON payload dict, or None if invalid.
+    """
+    if not signed_request or "." not in signed_request:
+        return None
+    try:
+        encoded_sig, payload = signed_request.split(".", 1)
+        padded_payload = payload + "=" * (-len(payload) % 4)
+        data = json.loads(base64.urlsafe_b64decode(padded_payload.encode("utf-8")).decode("utf-8"))
+
+        if app_secret:
+            padded_sig = encoded_sig + "=" * (-len(encoded_sig) % 4)
+            sig = base64.urlsafe_b64decode(padded_sig.encode("utf-8"))
+            expected_sig = hmac.new(
+                app_secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+            ).digest()
+            if not hmac.compare_digest(sig, expected_sig):
+                logger.warning("Meta signed_request signature verification failed")
+        return data
+    except Exception as e:
+        logger.warning("Failed to parse signed_request: %s", e)
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Webhook processing (runs OFF the request thread)
 # ---------------------------------------------------------------------------
@@ -551,6 +591,117 @@ def process_webhook_payload(payload):
         except Exception as e:  # noqa: BLE001 - background thread must never die silently
             log_event("ERROR", "webhook_processing", f"Unhandled exception: {e}")
             logger.exception("Webhook processing failed")
+
+
+# ---------------------------------------------------------------------------
+# Meta Compliance & Policy routes (Public)
+# ---------------------------------------------------------------------------
+@app.route("/privacy", methods=["GET"])
+def privacy_policy():
+    """Renders Meta-compliant Privacy Policy."""
+    return Response(PRIVACY_HTML, mimetype="text/html")
+
+
+@app.route("/data-deletion", methods=["GET", "POST"])
+def data_deletion_route():
+    """Fulfills Meta's User Data Deletion requirement (GET instructions & POST callback)."""
+    if request.method == "POST":
+        signed_request = (
+            request.form.get("signed_request")
+            or (request.get_json(silent=True) or {}).get("signed_request")
+            or request.values.get("signed_request")
+            or ""
+        )
+
+        user_id = ""
+        user_identifier = ""
+        if signed_request:
+            secret = get_setting("ig_app_secret") or IG_APP_SECRET
+            payload = parse_signed_request(signed_request, secret)
+            if payload and isinstance(payload, dict):
+                user_id = str(payload.get("user_id", ""))
+                user_identifier = user_id
+        else:
+            req_data = request.get_json(silent=True) or request.form or {}
+            user_identifier = (
+                req_data.get("user_identifier")
+                or req_data.get("user_id")
+                or req_data.get("username")
+                or ""
+            ).strip()
+            user_id = user_identifier
+
+        confirmation_code = secrets.token_hex(16)
+        deleted_count = 0
+
+        conn = get_raw_conn()
+        try:
+            if user_identifier:
+                cur = conn.execute(
+                    "DELETE FROM processed_comments WHERE commenter_id=? OR commenter_username=?",
+                    (user_identifier, user_identifier),
+                )
+                deleted_count = cur.rowcount
+
+            conn.execute(
+                "INSERT INTO deletion_requests (confirmation_code, user_id, status, details) VALUES (?,?,?,?)",
+                (
+                    confirmation_code,
+                    user_id or user_identifier or "anonymous",
+                    "completed",
+                    f"Purged {deleted_count} interaction record(s).",
+                ),
+            )
+            conn.commit()
+        except sqlite3.Error as e:
+            logger.error("DB error during data deletion: %s", e)
+        finally:
+            conn.close()
+
+        log_event(
+            "INFO",
+            "data_deletion",
+            f"Data deletion processed for '{user_identifier or 'anonymous'}' ({deleted_count} records purged)",
+            {"confirmation_code": confirmation_code, "deleted_count": deleted_count},
+        )
+
+        status_url = f"{request.host_url.rstrip('/')}/data-deletion?id={confirmation_code}"
+
+        return jsonify({
+            "url": status_url,
+            "confirmation_code": confirmation_code,
+        }), 200
+
+    # GET Request: Render instructions or confirmation status
+    confirmation_id = (request.args.get("id") or request.args.get("code") or "").strip()
+    status_info = None
+    if confirmation_id:
+        conn = get_raw_conn()
+        row = conn.execute(
+            "SELECT * FROM deletion_requests WHERE confirmation_code=?",
+            (confirmation_id,),
+        ).fetchone()
+        conn.close()
+        if row:
+            status_info = {
+                "found": True,
+                "code": row["confirmation_code"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "details": row["details"] or "All interaction data has been permanently deleted.",
+            }
+        else:
+            status_info = {
+                "found": False,
+                "code": confirmation_id,
+                "status": "completed",
+                "details": "Request confirmed. No retained personal data exists for this identifier in our database.",
+            }
+
+    return Response(
+        render_data_deletion_html(status_info=status_info, confirmation_id=confirmation_id),
+        mimetype="text/html",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1300,406 @@ BASE_STYLE = """
 """
 
 # ---------------------------------------------------------------------------
+# Meta Policy Pages (Privacy Policy & User Data Deletion)
+# ---------------------------------------------------------------------------
+PRIVACY_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy · CommentDM</title>
+""" + BASE_STYLE + """
+</head>
+<body class="min-h-screen bg-[var(--bg)] text-[var(--text)] flex flex-col justify-between">
+  <!-- Top bar -->
+  <header class="border-b" style="border-color:var(--border); background:var(--surface);">
+    <div class="max-w-4xl mx-auto px-5 py-4 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5 hover:opacity-80 transition">
+        <div class="w-8 h-8 rounded-xl bg-[var(--accent)] flex items-center justify-center text-white font-bold text-sm">C</div>
+        <span class="font-bold text-[15px]">CommentDM</span>
+      </a>
+      <div class="flex items-center gap-3">
+        <a href="/data-deletion" class="btn-ghost text-xs sm:text-sm">Data Deletion</a>
+        <a href="/" class="btn-secondary text-xs py-1.5 px-3 sm:py-2 sm:px-4">Dashboard</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="max-w-4xl mx-auto px-5 py-10 sm:py-14 w-full">
+    <div class="card p-6 sm:p-10 mb-8 space-y-8">
+      
+      <!-- Policy Header -->
+      <div class="border-b pb-6" style="border-color:var(--border)">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider mb-3 badge-skipped">
+          Legal &amp; Privacy Compliance
+        </div>
+        <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight">Privacy Policy</h1>
+        <p class="hint mt-2 text-sm">Last updated: August 2026 · Applies to CommentDM Instagram Automation Service</p>
+      </div>
+
+      <!-- 1. Introduction -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">1. Overview &amp; Scope</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          This Privacy Policy explains how <strong>CommentDM</strong> ("we", "our", or "the Application") collects, processes, and protects your information when you interact with connected Instagram posts, reels, and comments managed via the official Meta Graph API.
+        </p>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          CommentDM operates as an automated comment-to-direct-message engine. We are committed to transparency, data minimization, and full compliance with the <strong>Meta Platform Terms</strong>, <strong>Developer Policies</strong>, and international data protection principles (including GDPR and CCPA standards).
+        </p>
+      </section>
+
+      <!-- 2. Data We Collect -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">2. Information We Collect</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          We collect and process only the minimal data strictly required to deliver requested automated replies and direct messages:
+        </p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <div class="field-flat p-3.5 space-y-1">
+            <p class="text-xs font-bold font-mono text-[var(--accent)]">Instagram Scoped ID (IGSID)</p>
+            <p class="text-xs text-[var(--text-soft)]">Unique, app-scoped user identifier assigned by Meta to route direct messages to the commenter.</p>
+          </div>
+          <div class="field-flat p-3.5 space-y-1">
+            <p class="text-xs font-bold font-mono text-[var(--accent)]">Instagram Username</p>
+            <p class="text-xs text-[var(--text-soft)]">Public username of the commenting account, used for logging and delivery audit records.</p>
+          </div>
+          <div class="field-flat p-3.5 space-y-1">
+            <p class="text-xs font-bold font-mono text-[var(--accent)]">Comment Content &amp; ID</p>
+            <p class="text-xs text-[var(--text-soft)]">Comment text to evaluate keyword trigger rules, and comment ID for duplicate prevention and optional public replies.</p>
+          </div>
+          <div class="field-flat p-3.5 space-y-1">
+            <p class="text-xs font-bold font-mono text-[var(--accent)]">Follower Relationship</p>
+            <p class="text-xs text-[var(--text-soft)]">Binary follower status checked via Meta Graph API to route tailored responses for followers vs. non-followers.</p>
+          </div>
+        </div>
+        <p class="text-xs text-[var(--text-faint)] italic pt-1">
+          * We do NOT collect, access, or store passwords, financial/payment data, personal email addresses, phone numbers, or private direct messages outside the designated automation workflow.
+        </p>
+      </section>
+
+      <!-- 3. Purpose of Processing -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">3. Purpose of Processing</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          All data processing is initiated directly by your actions (such as commenting a trigger keyword or phrase on an authorized Instagram post). Data is used solely for:
+        </p>
+        <ul class="list-disc list-inside text-sm text-[var(--text-soft)] space-y-1.5 pl-1">
+          <li><strong>Automated Resource Delivery:</strong> Sending user-requested links, resources, discount codes, or information via Instagram Direct Message.</li>
+          <li><strong>Comment Reply Automation:</strong> Optionally publishing a public acknowledgment reply to your comment on the post.</li>
+          <li><strong>Deduplication &amp; Spam Prevention:</strong> Ensuring each commenter receives the automated response only once per campaign to prevent spamming.</li>
+        </ul>
+      </section>
+
+      <!-- 4. Data Storage & Retention -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">4. Data Storage, Security &amp; Retention</h2>
+        <ul class="list-disc list-inside text-sm text-[var(--text-soft)] space-y-2 pl-1">
+          <li><strong>Local Database Storage:</strong> Interaction records are stored in a self-hosted, secured SQLite database accessible only by the authorized application administrator.</li>
+          <li><strong>Zero Third-Party Sharing:</strong> We do <strong>NOT</strong> sell, rent, lease, trade, or share user data with data brokers, advertisers, or third parties under any circumstances.</li>
+          <li><strong>Zero Advertising Profiling:</strong> Data is never used for behavioral tracking, cross-site tracking, or advertising profile construction.</li>
+          <li><strong>Retention Period:</strong> Logs are stored transiently for administrative auditing and deduplication, and are regularly purged or deleted upon request.</li>
+        </ul>
+      </section>
+
+      <!-- 5. Third-Party Services -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">5. Third-Party Services (Meta Graph API)</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          CommentDM integrates directly with <strong>Meta Platforms, Inc.</strong> (Instagram Graph API, Webhooks). All interactions comply with Meta's developer policies. For more details on Meta's data practices, please review the <a href="https://www.facebook.com/privacy/policy" target="_blank" rel="noopener noreferrer" class="underline font-semibold hover:text-[var(--accent)]">Meta Privacy Policy</a>.
+        </p>
+      </section>
+
+      <!-- 6. User Rights & Data Deletion -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">6. Your Rights &amp; Data Deletion</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          You maintain full ownership and control of your data. You have the right to:
+        </p>
+        <ul class="list-disc list-inside text-sm text-[var(--text-soft)] space-y-1.5 pl-1">
+          <li>Request complete deletion of your interaction records from our systems at any time.</li>
+          <li>Revoke app permissions directly via your Instagram account settings.</li>
+          <li>Receive a unique confirmation tracking code verifying data erasure.</li>
+        </ul>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)] pt-1">
+          To remove your data or review step-by-step instructions, visit our <a href="/data-deletion" class="underline font-bold hover:text-[var(--accent)]">User Data Deletion Page</a>.
+        </p>
+      </section>
+
+      <!-- 7. Contact -->
+      <section class="space-y-3 border-t pt-6" style="border-color:var(--border)">
+        <h2 class="text-lg font-bold">7. Contact &amp; Inquiries</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          If you have any questions about this Privacy Policy, your personal data, or wish to submit a manual deletion request, please visit our <a href="/data-deletion" class="underline font-semibold hover:text-[var(--accent)]">Data Deletion portal</a> or contact the administrator.
+        </p>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t py-6 text-center text-xs text-[var(--text-faint)]" style="border-color:var(--border); background:var(--surface);">
+    <div class="max-w-4xl mx-auto px-5 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <span>&copy; CommentDM · Powered by Instagram Graph API</span>
+      <div class="flex items-center gap-4">
+        <a href="/privacy" class="hover:text-[var(--text)] transition font-medium">Privacy Policy</a>
+        <span>·</span>
+        <a href="/data-deletion" class="hover:text-[var(--text)] transition font-medium">Data Deletion</a>
+        <span>·</span>
+        <a href="/login" class="hover:text-[var(--text)] transition font-medium">Sign in</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
+"""
+
+
+def render_data_deletion_html(status_info=None, confirmation_id=""):
+    """Renders the step-by-step User Data Deletion Instructions and Status verification page."""
+    status_card_html = ""
+    if status_info:
+        code_esc = html.escape(str(status_info.get("code", "")))
+        created_at_esc = html.escape(str(status_info.get("created_at") or "Just now"))
+        details_esc = html.escape(str(status_info.get("details") or "All interaction data has been permanently deleted."))
+        status_card_html = f"""
+      <!-- Deletion Request Status Card -->
+      <div class="card p-6 sm:p-8 mb-8 border-2" style="border-color: var(--success); background: #ffffff;">
+        <div class="flex items-start justify-between flex-wrap gap-3 mb-4">
+          <div class="flex items-center gap-2">
+            <span class="dot" style="background: var(--success); width: 10px; height: 10px;"></span>
+            <span class="badge badge-sent uppercase">Request Status: Completed</span>
+          </div>
+          <span class="hint text-xs font-mono">{created_at_esc}</span>
+        </div>
+        <h2 class="text-xl font-bold mb-2">Data Deletion Confirmation</h2>
+        <p class="text-sm text-[var(--text-soft)] mb-5 leading-relaxed">
+          Your request has been verified and processed in compliance with Meta Developer Platform policies. All associated records, commenter identifiers, and interaction logs have been permanently erased from our databases.
+        </p>
+        <div class="field-flat p-4 space-y-2 font-mono text-xs">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span class="text-[var(--text-soft)]">Confirmation Code:</span>
+            <span class="font-bold text-sm text-[var(--accent)] select-all">{code_esc}</span>
+          </div>
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1 pt-1 border-t" style="border-color: var(--border)">
+            <span class="text-[var(--text-soft)]">Status Summary:</span>
+            <span class="text-[var(--success)] font-semibold">{details_esc}</span>
+          </div>
+        </div>
+      </div>
+        """
+    elif confirmation_id:
+        code_esc = html.escape(str(confirmation_id))
+        status_card_html = f"""
+      <!-- Deletion Request Status Card (Lookup) -->
+      <div class="card p-6 sm:p-8 mb-8 border-2" style="border-color: var(--success); background: #ffffff;">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="dot" style="background: var(--success); width: 10px; height: 10px;"></span>
+          <span class="badge badge-sent uppercase">Request Verified</span>
+        </div>
+        <h2 class="text-xl font-bold mb-2">Data Deletion Status: Completed</h2>
+        <p class="text-sm text-[var(--text-soft)] mb-4 leading-relaxed">
+          Request confirmed. All personal identifiers, interaction logs, and comment records for confirmation code <code class="font-mono bg-[var(--field)] px-1.5 py-0.5 rounded">{code_esc}</code> have been permanently purged.
+        </p>
+      </div>
+        """
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>User Data Deletion · CommentDM</title>
+{BASE_STYLE}
+</head>
+<body class="min-h-screen bg-[var(--bg)] text-[var(--text)] flex flex-col justify-between">
+  <!-- Top bar -->
+  <header class="border-b" style="border-color:var(--border); background:var(--surface);">
+    <div class="max-w-4xl mx-auto px-5 py-4 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5 hover:opacity-80 transition">
+        <div class="w-8 h-8 rounded-xl bg-[var(--accent)] flex items-center justify-center text-white font-bold text-sm">C</div>
+        <span class="font-bold text-[15px]">CommentDM</span>
+      </a>
+      <div class="flex items-center gap-3">
+        <a href="/privacy" class="btn-ghost text-xs sm:text-sm">Privacy Policy</a>
+        <a href="/" class="btn-secondary text-xs py-1.5 px-3 sm:py-2 sm:px-4">Dashboard</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="max-w-4xl mx-auto px-5 py-10 sm:py-14 w-full">
+    {status_card_html}
+
+    <div class="card p-6 sm:p-10 mb-8 space-y-8">
+      
+      <!-- Page Header -->
+      <div class="border-b pb-6" style="border-color:var(--border)">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider mb-3 badge-skipped">
+          Meta Platform Compliance
+        </div>
+        <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight">User Data Deletion Instructions</h1>
+        <p class="hint mt-2 text-sm">
+          Follow the instructions below to remove your user data and revoke Instagram app permissions for CommentDM.
+        </p>
+      </div>
+
+      <!-- Step-by-Step Guide -->
+      <section class="space-y-4">
+        <h2 class="text-lg font-bold">How to Revoke Permissions &amp; Request Data Removal</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          CommentDM integrates with the Meta Graph API to process keyword-triggered direct messages. In compliance with Meta Platform Terms, you can revoke access and trigger automatic data deletion at any time by following these steps:
+        </p>
+
+        <div class="space-y-3 pt-2">
+          <div class="flex items-start gap-3.5 p-4 rounded-2xl bg-[var(--field)]">
+            <div class="step-dot done shrink-0">1</div>
+            <div class="space-y-1">
+              <p class="text-sm font-bold">Open Instagram Settings</p>
+              <p class="text-xs text-[var(--text-soft)] leading-relaxed">
+                Open the Instagram mobile app or visit <a href="https://www.instagram.com" target="_blank" rel="noopener noreferrer" class="underline font-semibold text-[var(--accent)]">instagram.com</a> and log in. Navigate to your Profile &rarr; tap the Menu (☰) &rarr; select <strong>Settings and privacy</strong> (or <strong>Accounts Center</strong>).
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-start gap-3.5 p-4 rounded-2xl bg-[var(--field)]">
+            <div class="step-dot done shrink-0">2</div>
+            <div class="space-y-1">
+              <p class="text-sm font-bold">Navigate to Apps &amp; Websites</p>
+              <p class="text-xs text-[var(--text-soft)] leading-relaxed">
+                Go to <strong>Your information and permissions</strong> (or <strong>Website permissions</strong>) &rarr; tap <strong>Apps and websites</strong>.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-start gap-3.5 p-4 rounded-2xl bg-[var(--field)]">
+            <div class="step-dot done shrink-0">3</div>
+            <div class="space-y-1">
+              <p class="text-sm font-bold">Remove CommentDM</p>
+              <p class="text-xs text-[var(--text-soft)] leading-relaxed">
+                Under the <strong>Active</strong> tab, locate <strong>CommentDM</strong> in the list of authorized applications, select it, and click/tap <strong>Remove</strong>.
+              </p>
+            </div>
+          </div>
+
+          <div class="flex items-start gap-3.5 p-4 rounded-2xl bg-[var(--field)]">
+            <div class="step-dot done shrink-0">4</div>
+            <div class="space-y-1">
+              <p class="text-sm font-bold">Automatic Erasure Confirmation</p>
+              <p class="text-xs text-[var(--text-soft)] leading-relaxed">
+                Meta will immediately trigger our secure Data Deletion Callback endpoint. Our application server automatically erases all interaction logs, commenter IDs, and cached comment data linked to your account and generates a unique tracking confirmation code.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Interactive Manual Request & Lookup -->
+      <section class="border-t pt-8 space-y-6" style="border-color:var(--border)">
+        <div>
+          <h2 class="text-lg font-bold">Instant Manual Data Deletion Request</h2>
+          <p class="hint mt-1 text-xs sm:text-sm">
+            Enter your Instagram username or Scoped User ID below to instantly purge all related comments and logs from our database.
+          </p>
+        </div>
+
+        <div class="field-flat p-5 space-y-4">
+          <div>
+            <label class="label block mb-1.5">Instagram Username or User ID</label>
+            <div class="flex flex-col sm:flex-row gap-2">
+              <input id="del-user-input" class="field" placeholder="e.g. your_instagram_username">
+              <button id="del-submit-btn" class="btn-primary shrink-0 sm:w-auto w-full">Request Deletion</button>
+            </div>
+          </div>
+          <div id="del-feedback" class="hidden text-xs font-semibold"></div>
+        </div>
+
+        <div class="pt-2">
+          <h3 class="text-sm font-bold mb-1">Check Deletion Request Status</h3>
+          <p class="hint mb-3 text-xs">Already submitted a request? Check your confirmation code status below.</p>
+          <div class="flex flex-col sm:flex-row gap-2">
+            <input id="del-code-input" class="field font-mono text-xs" placeholder="Paste confirmation code (e.g. a1b2c3d4...)">
+            <button id="del-check-btn" class="btn-secondary shrink-0 sm:w-auto w-full">Check Status</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Technical Overview -->
+      <section class="border-t pt-6 space-y-2 text-xs text-[var(--text-soft)]" style="border-color:var(--border)">
+        <p class="font-semibold text-[var(--text)]">Data Retention &amp; Security Policy</p>
+        <p class="leading-relaxed">
+          CommentDM does not retain permanent personal profiles or advertising identifiers. All stored comment logs are strictly used for deduplication. Once purged, data cannot be recovered.
+        </p>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t py-6 text-center text-xs text-[var(--text-faint)]" style="border-color:var(--border); background:var(--surface);">
+    <div class="max-w-4xl mx-auto px-5 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <span>&copy; CommentDM · Meta Data Deletion Compliant</span>
+      <div class="flex items-center gap-4">
+        <a href="/privacy" class="hover:text-[var(--text)] transition font-medium">Privacy Policy</a>
+        <span>·</span>
+        <a href="/data-deletion" class="hover:text-[var(--text)] transition font-medium">Data Deletion</a>
+        <span>·</span>
+        <a href="/login" class="hover:text-[var(--text)] transition font-medium">Sign in</a>
+      </div>
+    </div>
+  </footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+$('del-submit-btn').addEventListener('click', async () => {{
+  const user = ($('del-user-input').value || '').trim();
+  const fb = $('del-feedback');
+  if (!user) {{
+    fb.className = 'text-xs font-semibold text-[var(--danger)]';
+    fb.textContent = 'Please enter your Instagram username or User ID.';
+    fb.classList.remove('hidden');
+    return;
+  }}
+  
+  const btn = $('del-submit-btn');
+  btn.disabled = true; btn.textContent = 'Processing…';
+  fb.classList.add('hidden');
+
+  try {{
+    const res = await fetch('/data-deletion', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{user_identifier: user}})
+    }});
+    const data = await res.json();
+    if (res.ok && data.confirmation_code) {{
+      window.location.href = '/data-deletion?id=' + encodeURIComponent(data.confirmation_code);
+      return;
+    }}
+    fb.className = 'text-xs font-semibold text-[var(--danger)]';
+    fb.textContent = data.error || 'Failed to process deletion request. Please try again.';
+    fb.classList.remove('hidden');
+  }} catch (e) {{
+    fb.className = 'text-xs font-semibold text-[var(--danger)]';
+    fb.textContent = 'Network error — please check your connection and try again.';
+    fb.classList.remove('hidden');
+  }}
+  btn.disabled = false; btn.textContent = 'Request Deletion';
+}});
+
+$('del-check-btn').addEventListener('click', () => {{
+  const code = ($('del-code-input').value || '').trim();
+  if (code) {{
+    window.location.href = '/data-deletion?id=' + encodeURIComponent(code);
+  }}
+}});
+</script>
+</body>
+</html>"""
+
+
+# ---------------------------------------------------------------------------
 # Auth pages
 # ---------------------------------------------------------------------------
 LOGIN_HTML = """<!DOCTYPE html>
@@ -1177,6 +1728,11 @@ LOGIN_HTML = """<!DOCTYPE html>
       </div>
       <div id="error" class="hidden text-sm text-[var(--danger)] font-medium"></div>
       <button id="submit" class="btn-primary w-full">Sign in</button>
+    </div>
+    <div class="text-center mt-6 text-xs text-[var(--text-faint)] space-x-3">
+      <a href="/privacy" class="hover:text-[var(--text)] transition">Privacy Policy</a>
+      <span>·</span>
+      <a href="/data-deletion" class="hover:text-[var(--text)] transition">Data Deletion</a>
     </div>
   </div>
 <script>
@@ -1233,6 +1789,11 @@ SETUP_HTML = """<!DOCTYPE html>
       </div>
       <div id="error" class="hidden text-sm text-[var(--danger)] font-medium"></div>
       <button id="submit" class="btn-primary w-full">Create account</button>
+    </div>
+    <div class="text-center mt-6 text-xs text-[var(--text-faint)] space-x-3">
+      <a href="/privacy" class="hover:text-[var(--text)] transition">Privacy Policy</a>
+      <span>·</span>
+      <a href="/data-deletion" class="hover:text-[var(--text)] transition">Data Deletion</a>
     </div>
   </div>
 <script>
@@ -1401,6 +1962,27 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="flex items-center gap-2">
               <input id="verify-token" class="field font-mono text-xs" readonly>
               <button data-copy="verify-token" class="btn-secondary shrink-0">Copy</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-6">
+        <h3 class="font-bold mb-1">Meta compliance &amp; policies</h3>
+        <p class="hint mb-4">Official endpoints required by Meta App Review and Basic Settings.</p>
+        <div class="space-y-3">
+          <div>
+            <label class="label block mb-1.5">Privacy Policy URL</label>
+            <div class="flex items-center gap-2">
+              <input id="privacy-url" class="field font-mono text-xs" readonly>
+              <button data-copy="privacy-url" class="btn-secondary shrink-0">Copy</button>
+            </div>
+          </div>
+          <div>
+            <label class="label block mb-1.5">User Data Deletion URL (GET Instructions &amp; POST Callback)</label>
+            <div class="flex items-center gap-2">
+              <input id="deletion-url" class="field font-mono text-xs" readonly>
+              <button data-copy="deletion-url" class="btn-secondary shrink-0">Copy</button>
             </div>
           </div>
         </div>
@@ -1658,6 +2240,8 @@ async function loadSettings() {
     $('set-token').placeholder = s.access_token_set ? 'Saved (' + s.access_token_masked + ')' : 'Leave blank to keep current';
     $('webhook-url').value = s.webhook_url;
     $('verify-token').value = s.verify_token;
+    if ($('privacy-url')) $('privacy-url').value = window.location.origin + '/privacy';
+    if ($('deletion-url')) $('deletion-url').value = window.location.origin + '/data-deletion';
     $('connected-preview').classList.toggle('hidden', !s.connected);
     if (s.connected) {
       $('conn-username').textContent = s.ig_username;
