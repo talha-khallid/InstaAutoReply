@@ -1,119 +1,104 @@
-<div align="center">
+# InstaAutoReply (CommentDM)
 
-# ⚡ InstaAutoReply (CommentDM)
-
-**A lightweight, production-ready Instagram Comment-to-DM automation engine.**  
-Built to run reliably on **PythonAnywhere's free tier**, VPS, or local development with **zero external dependencies** (no Redis, no Celery, no Docker required).
+A lightweight Instagram Comment-to-DM automation engine designed to run on PythonAnywhere (free tier), any Linux VPS, or local environments without external dependencies like Redis, Celery, or Docker.
 
 ---
 
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue.svg?style=flat-square&logo=python)](https://www.python.org/)
-[![Flask](https://img.shields.io/badge/Flask-3.x-black.svg?style=flat-square&logo=flask)](https://flask.palletsprojects.com/)
-[![Meta Graph API](https://img.shields.io/badge/Meta_Graph_API-v21.0-0866FF.svg?style=flat-square&logo=meta)](https://developers.facebook.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
+## Table of Contents
 
-</div>
-
----
-
-## 📋 Table of Contents
-
-- [Features](#-features)
-- [Architecture & Tech Stack](#-architecture--tech-stack)
-- [Quick Start: PythonAnywhere Deployment](#-quick-start-pythonanywhere-deployment-free-tier)
-- [Meta / Facebook Developer Setup](#-meta--facebook-developer-setup)
-  - [1. Create Meta Developer App](#1-create-a-meta-developer-app)
-  - [2. Generate Access Token (Dual-Compatible)](#2-generate-an-access-token)
-  - [3. Configure Instagram Webhook](#3-configure-instagram-webhooks)
-  - [4. Add Compliance URLs](#4-add-meta-compliance-urls)
-- [Local Development & Testing](#-local-development--testing)
-- [Admin Dashboard Walkthrough](#-admin-dashboard-walkthrough)
-- [Troubleshooting & Common Issues](#-troubleshooting--common-issues)
-- [Project Structure](#-project-structure)
-- [Compliance & Privacy](#-compliance--privacy)
+- [Overview & Features](#overview--features)
+- [Architecture & Tech Stack](#architecture--tech-stack)
+- [PythonAnywhere Deployment (Free Tier)](#pythonanywhere-deployment-free-tier)
+- [Meta / Facebook Developer Setup](#meta--facebook-developer-setup)
+  - [1. Create Meta Developer App](#1-create-meta-developer-app)
+  - [2. Generate Access Token](#2-generate-access-token)
+  - [3. Configure Instagram Webhook](#3-configure-instagram-webhook)
+  - [4. Set Compliance URLs](#4-set-compliance-urls)
+- [Local Development & Testing](#local-development--testing)
+- [Dashboard & Automation Rules](#dashboard--automation-rules)
+- [Troubleshooting & Common Issues](#troubleshooting--common-issues)
+- [Project Structure](#project-structure)
+- [Privacy & Compliance](#privacy--compliance)
+- [License](#license)
 
 ---
 
-## ✨ Features
+## Overview & Features
 
-- 🎯 **Follower-Aware Messaging**: Deliver **Message A** to active followers and **Message B** to non-followers (e.g. asking them to follow to unlock a bonus resource).
-- 💬 **Public Comment Auto-Reply**: Optionally post a randomized or custom public reply to the user's comment to boost post engagement algorithmically.
-- 🔄 **Dual Meta API Compatibility**:
-  - Supports **Instagram User Tokens** (`IG...` / `IGAA...`) routed automatically to `graph.instagram.com`.
-  - Supports **Facebook Page Access Tokens** (`EAA...`) routed automatically to `graph.facebook.com`.
-- ⚡ **Granular Automation Rules**:
-  - Filter triggers by specific keywords (comma-separated) or reply to all incoming comments.
-  - Target specific Instagram posts/reels or apply automations globally to all content.
-- 📊 **Built-In Lightweight Dashboard**:
-  - Live activity feed & conversion analytics (delivered, follower vs non-follower, duplicates, failures).
-  - 4-step interactive wizard for creating and editing automations.
-  - Zero frontend build step (Tailwind CSS CDN + vanilla JS).
-- 🛡️ **Meta Review & Platform Compliant**:
-  - Built-in `GET /privacy` (Privacy Policy) page.
-  - Built-in `GET /data-deletion` (Step-by-step user instructions & confirmation tracking).
-  - Built-in `POST /data-deletion` (Meta Signed Request callback handler).
-- 🔒 **Secure & Idempotent**:
-  - SQLite database with WAL mode ensures fast reads/writes with automatic deduplication so users never receive duplicate DMs.
-  - Protected single-admin auth with password hashing (`werkzeug.security`).
+- **Follower-Aware Direct Messaging**: Sends separate, configurable messages to active followers (Message A) and non-followers (Message B).
+- **Public Comment Replies**: Automatically posts public reply comments to boost post interaction and confirm DM dispatch.
+- **Dual Meta Graph API Compatibility**:
+  - Automatically routes Instagram User Tokens (`IG...` / `IGAA...`) to `graph.instagram.com`.
+  - Automatically routes Facebook Page Access Tokens (`EAA...`) to `graph.facebook.com`.
+- **Targeting & Trigger Controls**:
+  - Target specific Instagram posts/reels or apply automations globally across all media.
+  - Trigger by comma-separated keyword matching or respond to every incoming comment.
+- **Embedded Admin Dashboard**:
+  - Single-page dashboard with real-time delivery metrics, activity logs, and a 4-step automation wizard.
+  - Zero build step required (vanilla JS and Tailwind CSS CDN).
+- **Meta Policy & Review Ready**:
+  - Built-in `GET /privacy` endpoint for Meta App Review compliance.
+  - Built-in `GET /data-deletion` (user instructions) and `POST /data-deletion` (Meta Signed Request callback).
+- **Deduplication & Reliability**:
+  - SQLite backend with WAL mode to ensure idempotency and prevent duplicate DMs on retried webhooks.
+  - Built-in exponential backoff for resilient API requests.
 
 ---
 
-## 🏗 Architecture & Tech Stack
+## Architecture & Tech Stack
 
 ```
-                               ┌────────────────────────┐
-                               │  Instagram User Post   │
-                               └───────────┬────────────┘
-                                           │ (User comments keyword)
-                                           ▼
-┌──────────────────┐           ┌────────────────────────┐
-│  Meta Graph API  │ ◄──────── │   Meta Webhook Server  │
-└────────┬─────────┘           └───────────┬────────────┘
-         │                                 │ (POST /webhook)
-         │                                 ▼
-         │                     ┌────────────────────────┐
-         │ (Send DM & Reply)   │  InstaAutoReply Engine │
-         └──────────────────── │  (Flask + SQLite WAL)  │
-                               └────────────────────────┘
+                              +------------------------+
+                              |  Instagram User Post   |
+                              +-----------+------------+
+                                          | (Comment posted)
+                                          v
++------------------+          +------------------------+
+|  Meta Graph API  | <------- |   Meta Webhook Server  |
++--------+---------+          +-----------+------------+
+         |                                | (POST /webhook)
+         |                                v
+         |                    +------------------------+
+         | (Send DM & Reply)  |  InstaAutoReply Engine |
+         +------------------- |  (Flask + SQLite WAL)  |
+                              +------------------------+
 ```
 
 - **Backend**: Python 3.9+, Flask
-- **Database**: SQLite3 (Single-file persistent storage, WAL enabled)
-- **HTTP Client**: `requests` with exponential backoff retries & connection pooling
-- **Frontend**: Embedded Single Page Application (Tailwind CSS CDN, Inter / JetBrains Mono)
-- **Hosting Target**: PythonAnywhere (Free / Hacker tier) or any Linux VPS
+- **Database**: SQLite3 (Single-file storage, WAL enabled)
+- **HTTP Client**: `requests` with exponential backoff retry logic
+- **Frontend**: Embedded dashboard (Tailwind CSS, Inter / JetBrains Mono)
+- **Hosting**: PythonAnywhere (Free tier compatible) or any Linux VPS
 
 ---
 
-## 🚀 Quick Start: PythonAnywhere Deployment (Free Tier)
+## PythonAnywhere Deployment (Free Tier)
 
-PythonAnywhere's free tier allows outbound HTTPS requests to allowlisted domains. Both `graph.instagram.com` and `graph.facebook.com` are allowlisted by default.
+PythonAnywhere free accounts allow outbound HTTPS requests to allowlisted domains. Both `graph.instagram.com` and `graph.facebook.com` are on the allowlist.
 
-### Step 1: Create PythonAnywhere Account
-1. Sign up for a free account at [pythonanywhere.com](https://www.pythonanywhere.com/).
+### 1. Create a PythonAnywhere Account
+Sign up for a free account at [pythonanywhere.com](https://www.pythonanywhere.com/).
 
-### Step 2: Open a Bash Console & Clone Repository
-1. Navigate to the **Consoles** tab and click **Bash**.
-2. Clone this repository into your home directory:
+### 2. Clone Repository & Install Dependencies
+1. Open a **Bash console** from the **Consoles** tab.
+2. Clone the repository into your home directory:
    ```bash
    git clone https://github.com/talha-khallid/InstaAutoReply.git
    cd InstaAutoReply
    ```
-3. Install required Python packages:
+3. Install required packages:
    ```bash
    pip install --user flask requests werkzeug
    ```
 
-### Step 3: Configure Web App
-1. Go to the **Web** tab in PythonAnywhere.
+### 3. Configure the Web App
+1. Go to the **Web** tab.
 2. Click **Add a new web app**.
-3. Choose **Manual configuration** (do **not** choose Django or automatic Flask), and select **Python 3.10** (or 3.11).
-4. In the **Virtualenv** section (optional), or use system Python.
-5. In the **Code** section:
+3. Choose **Manual configuration** and select **Python 3.10** (or newer).
+4. Under the **Code** section:
    - **Source code**: `/home/<your-username>/InstaAutoReply`
    - **Working directory**: `/home/<your-username>/InstaAutoReply`
-6. Click on the **WSGI configuration file** link (e.g. `/var/www/<your-username>_pythonanywhere_com_wsgi.py`).
-7. Replace its entire contents with:
+5. Click on the **WSGI configuration file** link and replace its contents with:
    ```python
    import sys
    import os
@@ -124,182 +109,160 @@ PythonAnywhere's free tier allows outbound HTTPS requests to allowlisted domains
 
    from app import app as application
    ```
-   *(Replace `<your-username>` with your actual PythonAnywhere username)*
-8. Save the file and go back to the **Web** tab.
-9. Click the green **Reload <your-username>.pythonanywhere.com** button.
+   *(Replace `<your-username>` with your PythonAnywhere username)*
+6. Save the file, return to the **Web** tab, and click **Reload <your-username>.pythonanywhere.com**.
 
-### Step 4: Complete Initial Admin Setup
-1. Visit `https://<your-username>.pythonanywhere.com/setup` in your browser.
-2. Create your admin username and password (at least 8 characters).
-3. Log in to your CommentDM dashboard.
+### 4. Admin Setup
+1. Open `https://<your-username>.pythonanywhere.com/setup` in your browser.
+2. Create an admin username and password (minimum 8 characters).
+3. Log in to access the dashboard.
 
 ---
 
-## 🛠 Meta / Facebook Developer Setup
+## Meta / Facebook Developer Setup
 
-To connect Instagram automation, you need an authorized Meta Developer App.
+An authorized Meta Developer App is required to receive webhooks and send messages.
 
-### 1. Create a Meta Developer App
+### 1. Create Meta Developer App
 1. Go to the [Meta for Developers Portal](https://developers.facebook.com/) and log in.
-2. Click **My Apps** &rarr; **Create App**.
-3. Select **Other** &rarr; **Next** &rarr; Select **Business** or **Consumer** &rarr; **Next**.
-4. Enter an **App Display Name** (e.g. `CommentDM Automation`) and your contact email. Click **Create app**.
+2. Click **My Apps** -> **Create App**.
+3. Select **Other** -> **Business** (or Consumer with Instagram Graph API) -> **Next**.
+4. Enter an App Name and Contact Email, then create the app.
 
 ---
 
-### 2. Generate an Access Token
+### 2. Generate Access Token
 
-InstaAutoReply supports **both** token types automatically:
+The application supports both token types automatically:
 
-#### Option A: Instagram User Token (`IG...`) — Recommended for Creators
-1. In your Meta App Dashboard, add the **Instagram** / **Instagram API with Instagram Login** product.
-2. Add your Instagram account as a Test User or connect via Instagram Login.
-3. Generate a User Access Token. It will start with `IG...` or `IGAA...`.
-4. Required permissions:
+#### Option A: Instagram User Token (`IG...`)
+1. In your Meta App Dashboard, add the **Instagram** product (Instagram API with Instagram Login).
+2. Connect your Instagram Business or Creator account.
+3. Generate a User Token with the following permissions:
    - `instagram_business_basic`
    - `instagram_business_manage_messages`
    - `instagram_business_manage_comments`
 
-#### Option B: Facebook Page Token (`EAA...`) — For Business Pages
+#### Option B: Facebook Page Token (`EAA...`)
 1. In your Meta App Dashboard, add **Instagram Graph API** and **Facebook Login for Business**.
-2. Link your Instagram Professional account (Business or Creator) to a Facebook Page in Instagram Settings.
-3. In Graph API Explorer, select your App and generate a User Token with:
+2. Link your Instagram Professional account to a Facebook Page.
+3. Generate a Long-Lived Page Access Token with:
    - `pages_show_list`, `pages_read_engagement`, `instagram_basic`, `instagram_manage_comments`, `instagram_manage_messages`
-4. Exchange it for a Long-Lived Page Access Token (starts with `EAAB...` or `EAA...`).
 
 ---
 
-### 3. Configure Instagram Webhooks
+### 3. Configure Instagram Webhook
 
-1. In your Meta App dashboard, navigate to **Webhooks** (or **Instagram** &rarr; **Webhooks**).
+1. In your Meta App dashboard, navigate to **Webhooks** -> **Instagram**.
 2. Set the **Callback URL** to:
    ```
    https://<your-username>.pythonanywhere.com/webhook
    ```
-3. Set the **Verify Token** to the token shown under **Settings** &rarr; **Webhook** in your CommentDM dashboard.
+3. Set the **Verify Token** to the value displayed in your CommentDM dashboard under **Settings** -> **Webhook**.
 4. Click **Verify and Save**.
-5. Subscribe to the **`comments`** field for your connected Instagram / Page account.
+5. Subscribe to the **`comments`** field for your connected Instagram account.
 
 ---
 
-### 4. Add Meta Compliance URLs
+### 4. Set Compliance URLs
 
-Meta requires valid compliance URLs in your **App settings &rarr; Basic**:
+Meta requires compliance URLs in **App settings -> Basic**:
 
-| Meta Field | URL to Provide | Method |
+| Meta Field | Endpoint URL | Method |
 |---|---|---|
-| **Privacy Policy URL** | `https://<your-username>.pythonanywhere.com/privacy` | `GET` |
-| **User Data Deletion URL** | `https://<your-username>.pythonanywhere.com/data-deletion` | `GET` / `POST` |
-| **Data Deletion Callback** | `https://<your-username>.pythonanywhere.com/data-deletion` | `POST` (Callback) |
+| Privacy Policy URL | `https://<your-username>.pythonanywhere.com/privacy` | `GET` |
+| User Data Deletion URL | `https://<your-username>.pythonanywhere.com/data-deletion` | `GET` / `POST` |
+| Data Deletion Callback | `https://<your-username>.pythonanywhere.com/data-deletion` | `POST` |
 
-*Both URLs are accessible out of the box and can be copied in 1 click from the dashboard Settings tab.*
+*(These URLs can be copied directly from the Settings tab in the dashboard.)*
 
 ---
 
-## 💻 Local Development & Testing
+## Local Development & Testing
 
 ### Running Locally
 ```bash
-# 1. Clone repo
+# Clone the repository
 git clone https://github.com/talha-khallid/InstaAutoReply.git
 cd InstaAutoReply
 
-# 2. Install dependencies
+# Install dependencies
 pip install flask requests werkzeug
 
-# 3. Start local server
+# Run application
 python app.py
 ```
-App will start on `http://localhost:5000`.
+The server will start at `http://localhost:5000`.
 
-### Testing Webhooks Locally with ngrok / Cloudflare Tunnel
-Since Meta webhooks require a publicly accessible HTTPS endpoint:
+### Local Webhook Testing via Tunnel
+To expose your local server to Meta webhooks:
 ```bash
 ngrok http 5000
 ```
-Copy the forwarding HTTPS address (e.g. `https://xyz123.ngrok-free.app`) and use:
-- **Callback URL**: `https://xyz123.ngrok-free.app/webhook`
-- **Verify Token**: Found in CommentDM Settings
+Use the generated HTTPS URL as your callback:
+- **Callback URL**: `https://<subdomain>.ngrok-free.app/webhook`
+- **Verify Token**: Found in your dashboard Settings tab
 
 ---
 
-## 🖥 Admin Dashboard Walkthrough
+## Dashboard & Automation Rules
 
-### 1. Activity Log & Metrics
-Track real-time stats including:
-- **Total Comments Received**
-- **DMs Delivered**
-- **Follower vs. Non-Follower DMs**
-- **Duplicate Comments Ignored** (Prevents spam)
-- **Detailed activity log** with status badges (`sent`, `failed`, `skipped`)
+### Activity Monitoring
+The dashboard tracks:
+- Total comments received vs. duplicates ignored.
+- DMs delivered, broken down by followers vs. non-followers.
+- Dispatch failure logs and error details.
 
-### 2. Creating an Automation (4-Step Wizard)
-1. **Name & Media**: Name your automation and choose whether it applies to **All Posts** or a **Specific Post/Reel**.
-2. **Trigger Rules**:
-   - *Reply to every comment* OR
-   - *Keyword match* (e.g. `guide, send, link, ebook`).
-3. **Follower-Aware Responses**:
-   - **Message A (Followers)**: Direct link / full resource delivery.
-   - **Message B (Non-Followers)**: Polite prompt + bonus link.
-4. **Public Reply**: Optional automated public reply to comment (e.g. *"Check your DMs! 📩"*).
+### Automation Creation Workflow
+1. **Name & Media**: Specify an automation name and select either a specific post/reel or all posts.
+2. **Trigger Condition**: Choose between keyword matching (comma-separated list) or replying to every comment.
+3. **Message Configuration**:
+   - **Message A**: Sent to users who follow the account.
+   - **Message B**: Sent to users who do not follow the account.
+4. **Public Reply**: Optional automated comment response on the post.
 
 ---
 
-## ❓ Troubleshooting & Common Issues
+## Troubleshooting & Common Issues
 
-<details>
-<summary><strong>1. "Invalid OAuth access token - Cannot parse the access token"</strong></summary>
+#### 1. "Invalid OAuth access token - Cannot parse the access token"
+- **Cause**: An `IG...` token was sent to `graph.facebook.com` instead of `graph.instagram.com`.
+- **Solution**: The application handles this automatically via `get_base_url()`, dynamically routing `IG...` tokens to Instagram's endpoint and `EAA...` tokens to Facebook's endpoint.
 
-This error happens when an `IG...` token is sent to `graph.facebook.com` instead of `graph.instagram.com`.  
-**Solution**: This codebase includes dynamic token routing (`get_base_url`). It automatically detects whether your token is an Instagram native token (`IG...`) or a Facebook Page token (`EAA...`) and sends requests to the correct endpoint.
-</details>
+#### 2. Webhook verification fails ("Forbidden 403")
+- Ensure the Verify Token entered in the Meta dashboard matches the value in CommentDM Settings.
+- Verify that the web app is running and reloaded.
 
-<details>
-<summary><strong>2. Webhook verification fails ("Forbidden 403")</strong></summary>
+#### 3. Comments received but no DMs sent
+- Check the Activity Log tab in the dashboard for error codes.
+- Ensure the Instagram account is connected via **Settings -> Save & connect**.
+- In Meta Development Mode, DMs can only be delivered to accounts configured as Testers or Developers in the Meta App. Switch the app to Live Mode for public users.
 
-- Verify that the **Verify Token** pasted into Meta exactly matches the value in your CommentDM dashboard Settings tab.
-- Ensure your PythonAnywhere web app is reloaded and active.
-</details>
-
-<details>
-<summary><strong>3. Comments are received but no DMs are sent</strong></summary>
-
-- Check the **Activity Log** tab in your CommentDM dashboard.
-- If error is `"Instagram account not connected"`, go to Settings and click **Save & connect** with your token.
-- Ensure the user commenting does not have their DMs restricted to friends only.
-- In Meta App Development mode, direct messages can only be delivered to accounts listed under **Roles &rarr; Test Users / Developers**. Switch app to **Live** mode for public users.
-</details>
-
-<details>
-<summary><strong>4. Follower check always returns False</strong></summary>
-
-- Meta's `is_user_follow_business` field is only provided for **Page tokens (`EAA...`)**.
-- When using Instagram-native creator tokens (`IG...`), the system defaults to Message B (or a unified flow) gracefully without breaking.
-</details>
+#### 4. Follower status returns false
+- The `is_user_follow_business` API field is only supported for Facebook Page tokens (`EAA...`).
+- When using Instagram User tokens (`IG...`), the system defaults to Message B without throwing errors.
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 InstaAutoReply/
-│
-├── app.py                  # Single-file Flask app (routes, DB, Meta API, embedded UI)
-├── .gitignore              # Ignores SQLite databases, pycache, venv, and local configs
-├── README.md               # Complete setup, deployment, and Meta API guide
-└── automation.db           # Auto-created SQLite database (created on first run)
+├── app.py              # Main application (routes, Meta API helpers, embedded dashboard)
+├── .gitignore          # Excludes SQLite databases, caches, and environments
+└── README.md           # Setup, deployment, and configuration documentation
 ```
 
 ---
 
-## 🔒 Compliance & Privacy
+## Privacy & Compliance
 
-- **Data Minimization**: Stores only interaction timestamps, comment IDs, and user IDs strictly for webhook deduplication.
-- **No Third-Party Brokers**: Data is stored locally in your SQLite instance and is never transmitted to third parties.
-- **Meta Platform Policy**: Fully supports user data deletion callbacks (`POST /data-deletion`) and user removal instructions (`GET /data-deletion`).
+- **Data Minimization**: Stores only interaction timestamps, comment IDs, and user IDs required for message deduplication.
+- **No Third-Party Sharing**: Data is kept entirely within your local SQLite instance and never shared with external parties.
+- **Data Deletion Support**: Fully compliant with Meta data deletion requirements via `/data-deletion`.
 
 ---
 
-## 📄 License
+## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License.
