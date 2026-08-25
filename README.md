@@ -37,7 +37,7 @@ A lightweight Instagram Comment-to-DM automation engine designed to run on Pytho
   - Single-page dashboard with real-time delivery metrics, activity logs, and a 4-step automation wizard.
   - Zero build step required (vanilla JS and Tailwind CSS CDN).
 - **Meta Policy & Review Ready**:
-  - Built-in `GET /privacy` endpoint for Meta App Review compliance.
+  - Built-in `GET /privacy` (Privacy Policy) and `GET /terms` (Terms of Service) pages.
   - Built-in `GET /data-deletion` (user instructions) and `POST /data-deletion` (Meta Signed Request callback).
 - **Deduplication & Reliability**:
   - SQLite backend with WAL mode to ensure idempotency and prevent duplicate DMs on retried webhooks.
@@ -171,6 +171,7 @@ Meta requires compliance URLs in **App settings -> Basic**:
 | Meta Field | Endpoint URL | Method |
 |---|---|---|
 | Privacy Policy URL | `https://<your-username>.pythonanywhere.com/privacy` | `GET` |
+| Terms of Service URL | `https://<your-username>.pythonanywhere.com/terms` | `GET` |
 | User Data Deletion URL | `https://<your-username>.pythonanywhere.com/data-deletion` | `GET` / `POST` |
 | Data Deletion Callback | `https://<your-username>.pythonanywhere.com/data-deletion` | `POST` |
 

@@ -602,6 +602,12 @@ def privacy_policy():
     return Response(PRIVACY_HTML, mimetype="text/html")
 
 
+@app.route("/terms", methods=["GET"])
+def terms_of_service():
+    """Renders Meta-compliant Terms of Service."""
+    return Response(TERMS_HTML, mimetype="text/html")
+
+
 @app.route("/data-deletion", methods=["GET", "POST"])
 def data_deletion_route():
     """Fulfills Meta's User Data Deletion requirement (GET instructions & POST callback)."""
@@ -1444,6 +1450,178 @@ PRIVACY_HTML = """<!DOCTYPE html>
       <div class="flex items-center gap-4">
         <a href="/privacy" class="hover:text-[var(--text)] transition font-medium">Privacy Policy</a>
         <span>·</span>
+        <a href="/terms" class="hover:text-[var(--text)] transition font-medium">Terms of Service</a>
+        <span>·</span>
+        <a href="/data-deletion" class="hover:text-[var(--text)] transition font-medium">Data Deletion</a>
+        <span>·</span>
+        <a href="/login" class="hover:text-[var(--text)] transition font-medium">Sign in</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
+"""
+
+TERMS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terms of Service · CommentDM</title>
+""" + BASE_STYLE + """
+</head>
+<body class="min-h-screen bg-[var(--bg)] text-[var(--text)] flex flex-col justify-between">
+  <!-- Top bar -->
+  <header class="border-b" style="border-color:var(--border); background:var(--surface);">
+    <div class="max-w-4xl mx-auto px-5 py-4 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5 hover:opacity-80 transition">
+        <div class="w-8 h-8 rounded-xl bg-[var(--accent)] flex items-center justify-center text-white font-bold text-sm">C</div>
+        <span class="font-bold text-[15px]">CommentDM</span>
+      </a>
+      <div class="flex items-center gap-3">
+        <a href="/privacy" class="btn-ghost text-xs sm:text-sm">Privacy Policy</a>
+        <a href="/data-deletion" class="btn-ghost text-xs sm:text-sm">Data Deletion</a>
+        <a href="/" class="btn-secondary text-xs py-1.5 px-3 sm:py-2 sm:px-4">Dashboard</a>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content -->
+  <main class="max-w-4xl mx-auto px-5 py-10 sm:py-14 w-full">
+    <div class="card p-6 sm:p-10 mb-8 space-y-8">
+      
+      <!-- Policy Header -->
+      <div class="border-b pb-6" style="border-color:var(--border)">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider mb-3 badge-skipped">
+          Legal &amp; Terms of Service
+        </div>
+        <h1 class="text-2xl sm:text-3xl font-extrabold tracking-tight">Terms of Service</h1>
+        <p class="hint mt-2 text-sm">Last updated: August 2026 · Applies to CommentDM Instagram Automation Service</p>
+      </div>
+
+      <!-- 1. Agreement to Terms -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">1. Agreement to Terms</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          These Terms of Service ("Terms") constitute a legally binding agreement between you and <strong>CommentDM</strong> ("we", "our", or "the Service"). By accessing, interacting with, or using the Service—including by commenting on connected Instagram posts, reels, or content configured with automated response triggers—you agree to be bound by these Terms.
+        </p>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          If you do not agree to these Terms, you must not interact with the automated features or submit trigger comments on connected content.
+        </p>
+      </section>
+
+      <!-- 2. Description of the Service -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">2. Description of the Service</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          CommentDM is an automation engine that enables Instagram Creator and Business accounts to deliver automated direct messages (DMs) and public replies in response to user-initiated keyword comments on connected media, utilizing official Meta Graph APIs (Instagram Graph API and Webhooks).
+        </p>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          The Service is intended to fulfill direct requests from users for links, downloadable resources, coupons, customer support details, or supplemental content related to published Instagram posts.
+        </p>
+      </section>
+
+      <!-- 3. User Interaction & Consent -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">3. User Interaction &amp; Automated Triggers</h2>
+        <ul class="list-disc list-inside text-sm text-[var(--text-soft)] space-y-2 pl-1">
+          <li><strong>User-Initiated Consent:</strong> Automated direct messages are dispatched only when an Instagram user actively submits a comment matching a predefined trigger rule. By commenting, you explicitly consent to receiving the specific automated response and requested resource via Instagram Direct Message.</li>
+          <li><strong>One-Time Fulfillment:</strong> To prevent unwanted messaging, interactions are tracked locally to ensure that users receive only one fulfillment response per unique comment or campaign.</li>
+          <li><strong>Opt-Out &amp; Revocation:</strong> You can stop receiving automated communications at any time by ceasing to leave trigger comments, unfollowing the connected account, or revoking app permissions via Instagram settings.</li>
+        </ul>
+      </section>
+
+      <!-- 4. Acceptable Use & Conduct -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">4. Acceptable Use Policy</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          All users and account operators agree to comply with applicable local, state, national, and international laws, as well as the <strong>Instagram Community Guidelines</strong> and <strong>Meta Platform Terms</strong>. You agree not to use or exploit the Service to:
+        </p>
+        <ul class="list-disc list-inside text-sm text-[var(--text-soft)] space-y-1.5 pl-1">
+          <li>Send or distribute unsolicited spam, deceptive marketing, phishing URLs, or malware.</li>
+          <li>Transmit abusive, defamatory, harassing, hateful, or unlawful content.</li>
+          <li>Circumvent, disrupt, or overload the application servers, database, or Meta API rate limits.</li>
+          <li>Attempt unauthorized access to administrator accounts, tokens, or configuration settings.</li>
+        </ul>
+      </section>
+
+      <!-- 5. Third-Party Platform Dependency (Meta) -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">5. Third-Party Platform Dependencies</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          The Service operates via APIs provided by <strong>Meta Platforms, Inc.</strong> CommentDM is an independent software tool and is not affiliated with, sponsored by, or endorsed by Meta Platforms, Inc. or Instagram.
+        </p>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          Service availability, message delivery speeds, and webhook processing are dependent upon Meta's platform availability, API operational status, rate limits, and individual user privacy/DM settings. We are not responsible for delivery delays caused by Meta platform outages or user account restrictions.
+        </p>
+      </section>
+
+      <!-- 6. Intellectual Property -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">6. Intellectual Property Rights</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          The CommentDM software, dashboard interfaces, design assets, and documentation are the proprietary property of the application operators.
+        </p>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          Content, links, digital assets, and resources delivered via automated direct messages remain the intellectual property of their respective creators and copyright owners.
+        </p>
+      </section>
+
+      <!-- 7. Privacy & Data Protection -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">7. Privacy &amp; Data Deletion</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          Your privacy is important to us. All information processing—including the handling of Instagram Scoped User IDs (IGSID), usernames, and comment metadata—is governed by our <a href="/privacy" class="underline font-semibold hover:text-[var(--accent)]">Privacy Policy</a>.
+        </p>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          You may review our data deletion procedures or submit a manual deletion request at any time by visiting our <a href="/data-deletion" class="underline font-semibold hover:text-[var(--accent)]">User Data Deletion page</a>.
+        </p>
+      </section>
+
+      <!-- 8. Disclaimer of Warranties -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">8. Disclaimer of Warranties</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          The Service is provided on an <strong>"AS IS"</strong> and <strong>"AS AVAILABLE"</strong> basis, without warranties of any kind, whether express, implied, statutory, or otherwise. We expressly disclaim all warranties of merchantability, fitness for a particular purpose, and non-infringement.
+        </p>
+      </section>
+
+      <!-- 9. Limitation of Liability -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">9. Limitation of Liability</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          To the maximum extent permitted by applicable law, in no event shall CommentDM, its developers, or operators be liable for any indirect, incidental, special, consequential, or punitive damages, including loss of profits, data, or business opportunities, arising out of or related to your use of the Service.
+        </p>
+      </section>
+
+      <!-- 10. Modifications & Termination -->
+      <section class="space-y-3">
+        <h2 class="text-lg font-bold">10. Modifications &amp; Termination</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          We reserve the right to modify, suspend, or terminate the Service or these Terms at any time without prior notice. Changes will be posted to this page with an updated revision date. Continued interaction with the Service following changes constitutes acceptance of the modified Terms.
+        </p>
+      </section>
+
+      <!-- 11. Contact -->
+      <section class="space-y-3 border-t pt-6" style="border-color:var(--border)">
+        <h2 class="text-lg font-bold">11. Contact Information</h2>
+        <p class="text-sm leading-relaxed text-[var(--text-soft)]">
+          If you have any questions or concerns regarding these Terms of Service, please contact the administrator or visit our <a href="/data-deletion" class="underline font-semibold hover:text-[var(--accent)]">Data Deletion &amp; Support portal</a>.
+        </p>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t py-6 text-center text-xs text-[var(--text-faint)]" style="border-color:var(--border); background:var(--surface);">
+    <div class="max-w-4xl mx-auto px-5 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <span>&copy; CommentDM · Meta Developer Platform Compliant</span>
+      <div class="flex items-center gap-4">
+        <a href="/privacy" class="hover:text-[var(--text)] transition font-medium">Privacy Policy</a>
+        <span>·</span>
+        <a href="/terms" class="hover:text-[var(--text)] transition font-medium">Terms of Service</a>
+        <span>·</span>
         <a href="/data-deletion" class="hover:text-[var(--text)] transition font-medium">Data Deletion</a>
         <span>·</span>
         <a href="/login" class="hover:text-[var(--text)] transition font-medium">Sign in</a>
@@ -1642,6 +1820,8 @@ def render_data_deletion_html(status_info=None, confirmation_id=""):
       <div class="flex items-center gap-4">
         <a href="/privacy" class="hover:text-[var(--text)] transition font-medium">Privacy Policy</a>
         <span>·</span>
+        <a href="/terms" class="hover:text-[var(--text)] transition font-medium">Terms of Service</a>
+        <span>·</span>
         <a href="/data-deletion" class="hover:text-[var(--text)] transition font-medium">Data Deletion</a>
         <span>·</span>
         <a href="/login" class="hover:text-[var(--text)] transition font-medium">Sign in</a>
@@ -1732,6 +1912,8 @@ LOGIN_HTML = """<!DOCTYPE html>
     <div class="text-center mt-6 text-xs text-[var(--text-faint)] space-x-3">
       <a href="/privacy" class="hover:text-[var(--text)] transition">Privacy Policy</a>
       <span>·</span>
+      <a href="/terms" class="hover:text-[var(--text)] transition">Terms of Service</a>
+      <span>·</span>
       <a href="/data-deletion" class="hover:text-[var(--text)] transition">Data Deletion</a>
     </div>
   </div>
@@ -1792,6 +1974,8 @@ SETUP_HTML = """<!DOCTYPE html>
     </div>
     <div class="text-center mt-6 text-xs text-[var(--text-faint)] space-x-3">
       <a href="/privacy" class="hover:text-[var(--text)] transition">Privacy Policy</a>
+      <span>·</span>
+      <a href="/terms" class="hover:text-[var(--text)] transition">Terms of Service</a>
       <span>·</span>
       <a href="/data-deletion" class="hover:text-[var(--text)] transition">Data Deletion</a>
     </div>
@@ -1976,6 +2160,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <div class="flex items-center gap-2">
               <input id="privacy-url" class="field font-mono text-xs" readonly>
               <button data-copy="privacy-url" class="btn-secondary shrink-0">Copy</button>
+            </div>
+          </div>
+          <div>
+            <label class="label block mb-1.5">Terms of Service URL</label>
+            <div class="flex items-center gap-2">
+              <input id="terms-url" class="field font-mono text-xs" readonly>
+              <button data-copy="terms-url" class="btn-secondary shrink-0">Copy</button>
             </div>
           </div>
           <div>
@@ -2241,6 +2432,7 @@ async function loadSettings() {
     $('webhook-url').value = s.webhook_url;
     $('verify-token').value = s.verify_token;
     if ($('privacy-url')) $('privacy-url').value = window.location.origin + '/privacy';
+    if ($('terms-url')) $('terms-url').value = window.location.origin + '/terms';
     if ($('deletion-url')) $('deletion-url').value = window.location.origin + '/data-deletion';
     $('connected-preview').classList.toggle('hidden', !s.connected);
     if (s.connected) {
